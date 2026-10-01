@@ -354,12 +354,12 @@
           return;
         }
 
-        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО (Билборды)
-        const size = 3.6; // Оптимальный размер плашки под масштаб гекса
+        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО
+        const size = 3.6; 
         const geom = new THREE.PlaneGeometry(size, size);
         
-        // Pivot строго внизу (нижний срез касается земли)
-        geom.translate(0, size / 2, 0);
+        // Сдвигаем на 0.25 вместо size/2, чтобы компенсировать верхнее положение горы в холсте
+        geom.translate(0, size * 0.28, 0);
 
         const mat = new THREE.MeshBasicMaterial({
           map: texture,
@@ -371,17 +371,16 @@
 
         const billboard = new THREE.Mesh(geom, mat);
 
-        // Расставляем по глубине ячейки (передний, средний, задний план)
+        // Ставим основание плашки прямо в центр ячейки
+        // Все слои стоят на одной плоскости глубины, либо с микросдвигом 0.05
         const normal = cell.mesh.userData.normal;
         let upDir = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
         if (upDir.lengthSq() < 0.001) upDir = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
 
-        let depthOffset = 0;
-        if (layerIndex === 2) depthOffset = -0.55; // Передний план (кусты, трава)
-        if (layerIndex === 3) depthOffset = 0.0;   // Средний план (домики, деревья)
-        if (layerIndex === 4) depthOffset = 0.65;  // Задний план (горы, высотки)
-
-        const basePos = cell.mesh.userData.cellCenter.clone().add(upDir.clone().multiplyScalar(depthOffset));
+        // Микросмещение по глубине (только чтобы слои не мерцали друг в друге)
+        const depthStep = (layerIndex - 2) * 0.08; 
+        const basePos = cell.mesh.userData.cellCenter.clone().add(upDir.clone().multiplyScalar(depthStep));
+        
         billboard.position.copy(basePos);
 
         planetGroup.add(billboard);
