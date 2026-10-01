@@ -12,6 +12,7 @@
       user-select: none;
     }
 
+    /* Верхняя левая плашка подсказки */
     #hint {
       position: absolute;
       top: 16px;
@@ -24,8 +25,58 @@
       pointer-events: none;
       font-family: monospace;
       font-size: 13px;
+      z-index: 50;
     }
 
+    /* Панель управления вращением в правом верхнем углу */
+    #controls-panel {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: rgba(15, 15, 25, 0.85);
+      border: 1px solid #444;
+      border-radius: 8px;
+      padding: 12px 16px;
+      color: #eaeaea;
+      font-family: monospace;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 50;
+      backdrop-filter: blur(4px);
+    }
+
+    #toggle-rotation-btn {
+      background: #5ce1e6;
+      color: #12121a;
+      border: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+      font-family: monospace;
+      font-size: 12px;
+      transition: background 0.2s;
+    }
+
+    #toggle-rotation-btn:hover {
+      background: #39b2b7;
+    }
+
+    .speed-slider-container {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #rotation-speed-slider {
+      cursor: pointer;
+      width: 90px;
+      accent-color: #5ce1e6;
+    }
+
+    /* Модальное окно по клику */
     #info-modal {
       position: absolute;
       bottom: 24px;
@@ -102,9 +153,17 @@
   <div id="hint">
     <b>Коллаборативная Планета (42 ячейки)</b><br>
     • Честный 2.5D параллакс слоев<br>
-    • Автодоворот к камере и пиксельный свет<br>
+    • Чистый пиксель-арт без затенения<br>
     • Клик: Профиль автора и описание<br>
-    • ЛКМ + Drag: Вращение сферы
+    • ЛКМ + Drag: Ручное вращение сферы
+  </div>
+
+  <div id="controls-panel">
+    <button id="toggle-rotation-btn" onclick="toggleRotation()">⏸ Пауза</button>
+    <div class="speed-slider-container">
+      <span>Скорость:</span>
+      <input type="range" id="rotation-speed-slider" min="0" max="0.005" step="0.0002" value="0.0012" oninput="updateRotationSpeed(this.value)">
+    </div>
   </div>
 
   <div id="info-modal">
@@ -118,7 +177,7 @@
   <script>
     const GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSdgl15hbP2GJpqXlmz1lVPFX1nX0_VTNw52q1iUtRGGciDLSvYBEdqC75LWML8zXG4jw_ZlQlXEoq1/pub?gid=0&single=true&output=csv";
 
-    // 1. СЦЕНА, КАМЕРА, ОСВЕЩЕНИЕ
+    // 1. ИНИЦИАЛИЗАЦИЯ
     const scene = new THREE.Scene();
     const aspect = window.innerWidth / window.innerHeight;
     const viewSize = 13;
@@ -137,18 +196,25 @@
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
-    controls.autoRotate = false;
-
-    // Освещение: мягкий рассеянный свет + направленное теплое солнце
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
-    scene.add(ambientLight);
-    const sunLight = new THREE.DirectionalLight(0xfff7e6, 0.65);
-    sunLight.position.set(30, 45, 25);
-    scene.add(sunLight);
 
     const planetRadius = 8.0;
     const planetGroup = new THREE.Group();
     scene.add(planetGroup);
+
+    // Параметры авто-вращения
+    let isAutoRotating = true;
+    let rotationSpeed = 0.0012;
+    let isUserDragging = false;
+
+    function toggleRotation() {
+      isAutoRotating = !isAutoRotating;
+      const btn = document.getElementById('toggle-rotation-btn');
+      btn.innerText = isAutoRotating ? '⏸ Пауза' : '▶ Старт';
+    }
+
+    function updateRotationSpeed(val) {
+      rotationSpeed = parseFloat(val);
+    }
 
     // 2. ДЕФОЛТНЫЙ ШАБЛОН
     function createFallbackTexture(cellId, isPentagon) {
@@ -221,7 +287,7 @@
     const interactiveMeshes = [];
     const standingLayers = [];
 
-    // Подсветка контура при наведении
+    // Контур наведения
     const hoverOutlineGeom = new THREE.BufferGeometry();
     const hoverOutlineMat = new THREE.LineBasicMaterial({
       color: 0x5ce1e6,
@@ -300,7 +366,8 @@
       const isPentagon = sortedFaces.length === 5;
 
       const baseGeom = buildHexMesh(cellCenter, sortedFaces);
-      const baseMat = new THREE.MeshLambertMaterial({
+      // MeshBasicMaterial: чистый цвет без затенения
+      const baseMat = new THREE.MeshBasicMaterial({
         map: createFallbackTexture(cellId, isPentagon),
         transparent: true,
         alphaTest: 0.1,
@@ -342,7 +409,7 @@
         texture.minFilter = THREE.NearestFilter;
         texture.generateMipmaps = false;
 
-        // СЛОЙ 1: Поверхность ячейки (Земля)
+        // СЛОЙ 1: Земля
         if (layerIndex === 1) {
           cell.mesh.material.map = texture;
           cell.mesh.material.needsUpdate = true;
@@ -356,8 +423,8 @@
         // Pivot смещен в основание с микрозаглублением в грунт
         geom.translate(0, size * 0.44, 0);
 
-        // Используем Lambert-материал, чтобы спрайты принимали свет и давали объемную тень
-        const mat = new THREE.MeshLambertMaterial({
+        // MeshBasicMaterial: чистые оригинальные цвета автора без теней
+        const mat = new THREE.MeshBasicMaterial({
           map: texture,
           transparent: true,
           alphaTest: 0.15,
@@ -368,7 +435,7 @@
         const billboard = new THREE.Mesh(geom, mat);
         billboard.renderOrder = 10 + layerIndex;
 
-        // Смещение по глубине относительно камеры:
+        // Смещение по глубине вдоль вектора взгляда:
         // Слой 2 (кусты/заборчик) выдвинут на +0.55 к камере
         // Слой 3 (яблоня/колодец) в центре (0.0)
         // Слой 4 (дом/ели) отодвинут назад на -0.55 от камеры
@@ -421,11 +488,10 @@
     }
     fetchGoogleSheetData();
 
-    // 6. RAYCASTING
+    // 6. RAYCASTING & ВЗАИМОДЕЙСТВИЕ
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let hoveredMesh = null;
-    let isUserInteracting = false;
 
     function updateHoverOutline(mesh) {
       if (!mesh) {
@@ -469,13 +535,13 @@
       }
     });
 
-    window.addEventListener('mousedown', () => { isUserInteracting = true; });
-    window.addEventListener('mouseup', () => { isUserInteracting = false; });
-    window.addEventListener('touchstart', () => { isUserInteracting = true; });
-    window.addEventListener('touchend', () => { isUserInteracting = false; });
+    window.addEventListener('mousedown', () => { isUserDragging = true; });
+    window.addEventListener('mouseup', () => { isUserDragging = false; });
+    window.addEventListener('touchstart', () => { isUserDragging = true; });
+    window.addEventListener('touchend', () => { isUserDragging = false; });
 
     window.addEventListener('click', e => {
-      if (e.target.closest('#info-modal')) return;
+      if (e.target.closest('#info-modal') || e.target.closest('#controls-panel')) return;
 
       raycaster.setFromCamera(mouse, camera);
       const intersects = raycaster.intersectObjects(interactiveMeshes);
@@ -520,20 +586,15 @@
         const worldNormal = item.normal.clone().applyQuaternion(planetWorldQuat).normalize();
         const worldCenter = item.cellCenter.clone().applyQuaternion(planetWorldQuat);
 
-        // Вектор от ячейки к камере
         const toCam = camera.position.clone().sub(worldCenter).normalize();
-        
-        // Горизонт взгляда на поверхности ячейки
         const forward = toCam.sub(worldNormal.clone().multiplyScalar(toCam.dot(worldNormal))).normalize();
 
         if (forward.lengthSq() > 0.001) {
-          // 1. Поворот лицом к камере
           const right = new THREE.Vector3().crossVectors(worldNormal, forward).normalize();
           const rotMatrix = new THREE.Matrix4().makeBasis(right, worldNormal, forward);
           const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
           item.mesh.quaternion.copy(invPlanetQuat.clone().multiply(targetQuat));
 
-          // 2. Смещение по глубине строго вдоль вектора взгляда forward
           const localOffset = forward.clone().applyQuaternion(invPlanetQuat).multiplyScalar(item.depthOffset);
           item.mesh.position.copy(item.cellCenter).add(localOffset);
         }
@@ -544,9 +605,9 @@
     function animate() {
       requestAnimationFrame(animate);
 
-      // Плавное фоновое вращение планеты в режиме покоя
-      if (!isUserInteracting) {
-        planetGroup.rotation.y += 0.0012;
+      // Вращение работает только если включено кнопкой и пользователь сейчас не тащит планету мышкой
+      if (isAutoRotating && !isUserDragging) {
+        planetGroup.rotation.y += rotationSpeed;
       }
 
       controls.update();
