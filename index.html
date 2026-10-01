@@ -352,11 +352,11 @@
         }
 
         // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО (2.5D Билборды)
-        const size = 3.4;
+        const size = 4.2;
         const geom = new THREE.PlaneGeometry(size, size);
         
-        // Pivot строго по центру нижнего края (основание спрайта на полу)
-        geom.translate(0, size / 2, 0);
+        // Pivot смещен так, чтобы основание касалось грунта и слегка уходило в траву
+        geom.translate(0, size * 0.44, 0);
 
         const mat = new THREE.MeshBasicMaterial({
           map: texture,
@@ -367,25 +367,29 @@
         });
 
         const billboard = new THREE.Mesh(geom, mat);
-        billboard.renderOrder = 10 + layerIndex; // Гарантирует правильный порядок отрисовки
+        billboard.renderOrder = 10 + layerIndex;
 
-        // Смещение по глубине относительно центра ячейки
+        // Локальная глубина ячейки от переднего края к заднему
+        const normal = cell.mesh.userData.normal;
+        let upDir = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
+        if (upDir.lengthSq() < 0.001) upDir = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
+
+        // Смещение слоев: Слой 2 впереди, Слой 3 в центре, Слой 4 у заднего края
         const depthOffsets = {
-          2:  0.25, // Слой 2 (Передний план: кусты/трава) — выдвинут к зрителю
-          3:  0.0,  // Слой 3 (Средний план: домики/деревья) — в центре
-          4: -0.25  // Слой 4 (Задний план: горы/башни) — отодвинут назад
+          2: -0.5, // Передний план (заборчик, овечки, камни)
+          3:  0.0, // Средний план (яблоня, колодец)
+          4:  0.5  // Задний план (домик, сосны)
         };
+        const localOffset = upDir.clone().multiplyScalar(depthOffsets[layerIndex] || 0);
 
-        billboard.position.copy(cell.mesh.userData.cellCenter);
+        billboard.position.copy(cell.mesh.userData.cellCenter).add(localOffset);
 
         planetGroup.add(billboard);
         cell.mesh.userData.layers.push(billboard);
 
         standingLayers.push({
           mesh: billboard,
-          cellCenter: cell.mesh.userData.cellCenter,
-          normal: cell.mesh.userData.normal,
-          depthOffset: depthOffsets[layerIndex] || 0
+          normal: normal
         });
       });
     }
@@ -504,35 +508,25 @@
       modal.style.display = 'none';
     }
 
-    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ И ДИНАМИЧЕСКИЙ ПАРАЛЛАКС
+    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ ЛИЦОМ К КАМЕРЕ (ВОКРУГ НОРМАЛИ ЯЧЕЙКИ)
     function updateStandingLayers() {
       const planetWorldQuat = new THREE.Quaternion();
       planetGroup.getWorldQuaternion(planetWorldQuat);
       const invPlanetQuat = planetWorldQuat.clone().invert();
 
       standingLayers.forEach(item => {
-        // Мировая нормаль ячейки
         const worldNormal = item.normal.clone().applyQuaternion(planetWorldQuat).normalize();
-        
-        // Мировой центр ячейки
-        const worldCenter = item.cellCenter.clone().applyQuaternion(planetWorldQuat);
+        const worldPos = new THREE.Vector3();
+        item.mesh.getWorldPosition(worldPos);
 
-        // Направление от центра ячейки на камеру
-        const toCam = camera.position.clone().sub(worldCenter).normalize();
-        
-        // Горизонтальный вектор взгляда на плоскости ячейки
+        const toCam = camera.position.clone().sub(worldPos).normalize();
         const forward = toCam.sub(worldNormal.clone().multiplyScalar(toCam.dot(worldNormal))).normalize();
 
         if (forward.lengthSq() > 0.001) {
-          // Поворот билборда лицом к камере
           const right = new THREE.Vector3().crossVectors(worldNormal, forward).normalize();
           const rotMatrix = new THREE.Matrix4().makeBasis(right, worldNormal, forward);
           const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
           item.mesh.quaternion.copy(invPlanetQuat.clone().multiply(targetQuat));
-
-          // Смещение по глубине (передний / средний / задний план) вдоль линии взгляда
-          const offsetLocal = forward.clone().applyQuaternion(invPlanetQuat).multiplyScalar(item.depthOffset);
-          item.mesh.position.copy(item.cellCenter).add(offsetLocal);
         }
       });
     }
