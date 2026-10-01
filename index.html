@@ -241,14 +241,12 @@
       const uvs = [];
       const normal = cellCenter.clone().normalize();
 
-      // Базис плоскости ячейки
       let up = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
       if (up.lengthSq() < 0.001) {
         up = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
       }
       const right = new THREE.Vector3().crossVectors(up, normal).normalize();
 
-      // Находим максимальный радиус ячейки для точной подгонки UV
       let maxRadius = 0.001;
       for (let i = 0; i < sortedFaceIndices.length; i++) {
         const d = faceCenters[sortedFaceIndices[i]].clone().sub(cellCenter).length();
@@ -257,7 +255,6 @@
 
       function projectUV(point) {
         const diff = point.clone().sub(cellCenter);
-        // Масштабируем так, чтобы крайние точки лежали строго на окружности текстуры
         return {
           u: 0.5 + (diff.dot(right) / (maxRadius * 2.0)),
           v: 0.5 + (diff.dot(up) / (maxRadius * 2.0))
@@ -333,7 +330,7 @@
       };
     });
 
-    // 4. ПОДГРУЗКА СЛОЕВ: СЛОЙ 1 ЛЕЖИТ, СЛОИ 2-4 СТОЯТ
+    // 4. ПОДГРУЗКА СЛОЕВ: СЛОЙ 1 ЛЕЖИТ, СЛОИ 2-4 СТОЯТ «НОГАМИ» НА ЗЕМЛЕ
     const texLoader = new THREE.TextureLoader();
 
     function applyLayer(cellId, layerIndex, imgUrl) {
@@ -354,42 +351,41 @@
           return;
         }
 
-        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО
-        const size = 3.6; 
+        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО (2.5D Билборды)
+        const size = 3.4;
         const geom = new THREE.PlaneGeometry(size, size);
         
-        // Сдвигаем на 0.25 вместо size/2, чтобы компенсировать верхнее положение горы в холсте
-        geom.translate(0, size * 0.28, 0);
+        // Pivot строго по центру нижнего края (основание спрайта на полу)
+        geom.translate(0, size / 2, 0);
 
         const mat = new THREE.MeshBasicMaterial({
           map: texture,
           transparent: true,
-          alphaTest: 0.2,
+          alphaTest: 0.15,
           side: THREE.DoubleSide,
-          depthWrite: true
+          depthWrite: false
         });
 
         const billboard = new THREE.Mesh(geom, mat);
+        billboard.renderOrder = 10 + layerIndex; // Гарантирует правильный порядок отрисовки
 
-        // Ставим основание плашки прямо в центр ячейки
-        // Все слои стоят на одной плоскости глубины, либо с микросдвигом 0.05
-        const normal = cell.mesh.userData.normal;
-        let upDir = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
-        if (upDir.lengthSq() < 0.001) upDir = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
+        // Смещение по глубине относительно центра ячейки
+        const depthOffsets = {
+          2:  0.25, // Слой 2 (Передний план: кусты/трава) — выдвинут к зрителю
+          3:  0.0,  // Слой 3 (Средний план: домики/деревья) — в центре
+          4: -0.25  // Слой 4 (Задний план: горы/башни) — отодвинут назад
+        };
 
-        // Микросмещение по глубине (только чтобы слои не мерцали друг в друге)
-        const depthStep = (layerIndex - 2) * 0.08; 
-        const basePos = cell.mesh.userData.cellCenter.clone().add(upDir.clone().multiplyScalar(depthStep));
-        
-        billboard.position.copy(basePos);
+        billboard.position.copy(cell.mesh.userData.cellCenter);
 
         planetGroup.add(billboard);
         cell.mesh.userData.layers.push(billboard);
 
-        // Добавляем в список для автоповорота к камере вокруг нормали
         standingLayers.push({
           mesh: billboard,
-          normal: normal
+          cellCenter: cell.mesh.userData.cellCenter,
+          normal: cell.mesh.userData.normal,
+          depthOffset: depthOffsets[layerIndex] || 0
         });
       });
     }
@@ -414,7 +410,6 @@
           cellsData[cellId].desc = row[2]?.trim() || "";
           cellsData[cellId].link = row[3]?.trim() || "#";
 
-          // Подгружаем слои
           if (row[4]) applyLayer(cellId, 1, row[4].trim());
           if (row[5]) applyLayer(cellId, 2, row[5].trim());
           if (row[6]) applyLayer(cellId, 3, row[6].trim());
@@ -509,24 +504,35 @@
       modal.style.display = 'none';
     }
 
-    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ И ЦИКЛ РЕНДЕРА
+    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ И ДИНАМИЧЕСКИЙ ПАРАЛЛАКС
     function updateStandingLayers() {
       const planetWorldQuat = new THREE.Quaternion();
       planetGroup.getWorldQuaternion(planetWorldQuat);
+      const invPlanetQuat = planetWorldQuat.clone().invert();
 
       standingLayers.forEach(item => {
+        // Мировая нормаль ячейки
         const worldNormal = item.normal.clone().applyQuaternion(planetWorldQuat).normalize();
-        const worldPos = new THREE.Vector3();
-        item.mesh.getWorldPosition(worldPos);
+        
+        // Мировой центр ячейки
+        const worldCenter = item.cellCenter.clone().applyQuaternion(planetWorldQuat);
 
-        const toCam = camera.position.clone().sub(worldPos).normalize();
+        // Направление от центра ячейки на камеру
+        const toCam = camera.position.clone().sub(worldCenter).normalize();
+        
+        // Горизонтальный вектор взгляда на плоскости ячейки
         const forward = toCam.sub(worldNormal.clone().multiplyScalar(toCam.dot(worldNormal))).normalize();
 
         if (forward.lengthSq() > 0.001) {
+          // Поворот билборда лицом к камере
           const right = new THREE.Vector3().crossVectors(worldNormal, forward).normalize();
           const rotMatrix = new THREE.Matrix4().makeBasis(right, worldNormal, forward);
           const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
-          item.mesh.quaternion.copy(planetWorldQuat.clone().invert().multiply(targetQuat));
+          item.mesh.quaternion.copy(invPlanetQuat.clone().multiply(targetQuat));
+
+          // Смещение по глубине (передний / средний / задний план) вдоль линии взгляда
+          const offsetLocal = forward.clone().applyQuaternion(invPlanetQuat).multiplyScalar(item.depthOffset);
+          item.mesh.position.copy(item.cellCenter).add(offsetLocal);
         }
       });
     }
