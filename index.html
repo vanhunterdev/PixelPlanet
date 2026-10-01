@@ -237,15 +237,23 @@
 
     // Вспомогательная функция развертки UV
     function getUV(point, center, normal) {
-      let right = new THREE.Vector3(0, 1, 0).cross(normal).normalize();
-      if (right.lengthSq() < 0.01) right = new THREE.Vector3(1, 0, 0).cross(normal).normalize();
-      const up = normal.clone().cross(right).normalize();
-      const diff = point.clone().sub(center);
-      return {
-        u: 0.5 + diff.dot(right) * 0.28,
-        v: 0.5 + diff.dot(up) * 0.28
-      };
-    }
+  // Направляем вектор "вверх" вдоль радиальной плоскости ячейки
+  let up = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
+  if (up.lengthSq() < 0.001) {
+    up = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
+  }
+  const right = new THREE.Vector3().crossVectors(up, normal).normalize();
+
+  const diff = point.clone().sub(center);
+
+  // Масштаб: значение 0.42 убирает сжатие и закрывает чёрные дыры по краям
+  const scale = 0.42;
+
+  return {
+    u: 0.5 + diff.dot(right) * scale,
+    v: 0.5 + diff.dot(up) * scale
+  };
+}
 
     // Построение полигона слоя ячейки с физическим смещением (Параллакс)
     function buildHexMesh(cellCenter, sortedFaceIndices, radiusOffset) {
@@ -329,34 +337,38 @@
     const texLoader = new THREE.TextureLoader();
 
     function applyLayer(cellId, layerIndex, imgUrl, heightOffset) {
-    if (!imgUrl || imgUrl.trim() === '') return;
+  if (!imgUrl || imgUrl.trim() === '') return;
 
-      const cell = cellsData[cellId];
-      if (!cell) return;
+  const cell = cellsData[cellId];
+  if (!cell) return;
 
-      texLoader.load(imgUrl, texture => {
-        texture.magFilter = THREE.NearestFilter;
-        texture.minFilter = THREE.NearestFilter;
+  texLoader.load(imgUrl, texture => {
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
 
-        if (layerIndex === 1) {
-          // Заменяем базовую текстуру земли
-          cell.mesh.material.map = texture;
-          cell.mesh.material.needsUpdate = true;
-        } else {
-          // Создаем приподнятый слой (параллакс 2.5D)
-          const geom = buildHexMesh(cell.mesh.userData.cellCenter, cell.mesh.userData.sortedFaces, heightOffset);
-          const mat = new THREE.MeshLambertMaterial({
-            map: texture,
-            transparent: true,
-            alphaTest: 0.2,
-            depthWrite: false
-          });
-          const layerMesh = new THREE.Mesh(geom, mat);
-          planetGroup.add(layerMesh);
-          cell.mesh.userData.layers.push(layerMesh);
-        }
+    if (layerIndex === 1) {
+      // Базовый слой 1 — земля
+      cell.mesh.material.map = texture;
+      cell.mesh.material.needsUpdate = true;
+    } else {
+      // Слои 2, 3, 4 — парящие прозрачные слои
+      const geom = buildHexMesh(cell.mesh.userData.cellCenter, cell.mesh.userData.sortedFaces, heightOffset);
+      const mat = new THREE.MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        alphaTest: 0.05,        // Отсекает пустые пиксели без полупрозрачных артефактов
+        depthWrite: true,       // Сохраняет правильную сортировку глубины
+        side: THREE.FrontSide
       });
+
+      const layerMesh = new THREE.Mesh(geom, mat);
+      layerMesh.renderOrder = layerIndex; // Чем выше слой, тем позже рисуется
+      planetGroup.add(layerMesh);
+      cell.mesh.userData.layers.push(layerMesh);
     }
+  });
+}
 
     // 5. ПАРСИНГ GOOGLE ТАБЛИЦЫ (CSV)
     async function fetchGoogleSheetData() {
