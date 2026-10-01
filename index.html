@@ -12,7 +12,6 @@
       user-select: none;
     }
 
-    /* Верхняя плашка подсказки */
     #hint {
       position: absolute;
       top: 16px;
@@ -27,7 +26,6 @@
       font-size: 13px;
     }
 
-    /* Модальное окно по клику */
     #info-modal {
       position: absolute;
       bottom: 24px;
@@ -103,10 +101,10 @@
 
   <div id="hint">
     <b>Коллаборативная Планета (42 ячейки)</b><br>
-    • Слой 1: Поверхность (растянута без швов)<br>
-    • Слои 2-4: Стоячие 2.5D-объекты с автодоворотом<br>
-    • Клик: Профиль художника и описание<br>
-    • ЛКМ + Drag: Вращение шара
+    • Честный 2.5D параллакс слоев<br>
+    • Автодоворот к камере и пиксельный свет<br>
+    • Клик: Профиль автора и описание<br>
+    • ЛКМ + Drag: Вращение сферы
   </div>
 
   <div id="info-modal">
@@ -118,10 +116,9 @@
   </div>
 
   <script>
-    // ВСТАВЬТЕ СЮДА ВАШУ ССЫЛКУ НА ОПУБЛИКОВАННЫЙ CSV ИЗ GOOGLE SHEETS
     const GOOGLE_SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vSdgl15hbP2GJpqXlmz1lVPFX1nX0_VTNw52q1iUtRGGciDLSvYBEdqC75LWML8zXG4jw_ZlQlXEoq1/pub?gid=0&single=true&output=csv";
 
-    // 1. ИНИЦИАЛИЗАЦИЯ ТРЕХМЕРНОГО МИРА
+    // 1. СЦЕНА, КАМЕРА, ОСВЕЩЕНИЕ
     const scene = new THREE.Scene();
     const aspect = window.innerWidth / window.innerHeight;
     const viewSize = 13;
@@ -140,18 +137,20 @@
     const controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    controls.autoRotate = false;
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+    // Освещение: мягкий рассеянный свет + направленное теплое солнце
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
     scene.add(ambientLight);
-    const sunLight = new THREE.DirectionalLight(0xffffff, 0.4);
-    sunLight.position.set(30, 40, 20);
+    const sunLight = new THREE.DirectionalLight(0xfff7e6, 0.65);
+    sunLight.position.set(30, 45, 25);
     scene.add(sunLight);
 
     const planetRadius = 8.0;
     const planetGroup = new THREE.Group();
     scene.add(planetGroup);
 
-    // 2. ДЕФОЛТНЫЙ ПИКСЕЛЬНЫЙ ШАБЛОН ДЛЯ ЯЧЕЕК БЕЗ АРТА
+    // 2. ДЕФОЛТНЫЙ ШАБЛОН
     function createFallbackTexture(cellId, isPentagon) {
       const c = document.createElement('canvas');
       c.width = 64;
@@ -181,7 +180,7 @@
       return tex;
     }
 
-    // 3. ПОСТРОЕНИЕ СФЕРЫ НА 42 ЯЧЕЙКИ (Subdivision = 1)
+    // 3. ПОСТРОЕНИЕ СФЕРЫ НА 42 ЯЧЕЙКИ
     const baseIco = new THREE.IcosahedronGeometry(planetRadius, 1);
     const pos = baseIco.attributes.position;
     const vertices = [];
@@ -220,7 +219,7 @@
 
     const cellsData = {};
     const interactiveMeshes = [];
-    const standingLayers = []; // Список для обновления ориентации стоячих объектов
+    const standingLayers = [];
 
     // Подсветка контура при наведении
     const hoverOutlineGeom = new THREE.BufferGeometry();
@@ -234,7 +233,6 @@
     hoverOutlineMesh.renderOrder = 999;
     planetGroup.add(hoverOutlineMesh);
 
-    // Функция построения сетки ячейки со строгой нормализацией UV от края до края
     function buildHexMesh(cellCenter, sortedFaceIndices) {
       const geom = new THREE.BufferGeometry();
       const positions = [];
@@ -283,7 +281,6 @@
       return geom;
     }
 
-    // Сборка 42 ячеек
     vertToFaces.forEach((fIndices, cellId) => {
       if (fIndices.length === 0) return;
 
@@ -302,10 +299,11 @@
 
       const isPentagon = sortedFaces.length === 5;
 
-      // Базовый слой 1 (Земля)
       const baseGeom = buildHexMesh(cellCenter, sortedFaces);
       const baseMat = new THREE.MeshLambertMaterial({
         map: createFallbackTexture(cellId, isPentagon),
+        transparent: true,
+        alphaTest: 0.1,
         side: THREE.FrontSide
       });
       const baseMesh = new THREE.Mesh(baseGeom, baseMat);
@@ -330,7 +328,7 @@
       };
     });
 
-    // 4. ПОДГРУЗКА СЛОЕВ: СЛОЙ 1 ЛЕЖИТ, СЛОИ 2-4 СТОЯТ «НОГАМИ» НА ЗЕМЛЕ
+    // 4. ПОДГРУЗКА И ОРИЕНТАЦИЯ СТОЯЧИХ СЛОЕВ
     const texLoader = new THREE.TextureLoader();
 
     function applyLayer(cellId, layerIndex, imgUrl) {
@@ -344,21 +342,22 @@
         texture.minFilter = THREE.NearestFilter;
         texture.generateMipmaps = false;
 
-        // СЛОЙ 1: Лежит на сфере (Земля)
+        // СЛОЙ 1: Поверхность ячейки (Земля)
         if (layerIndex === 1) {
           cell.mesh.material.map = texture;
           cell.mesh.material.needsUpdate = true;
           return;
         }
 
-        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО (2.5D Билборды)
-        const size = 4.2;
+        // СЛОИ 2, 3, 4: Стоячие 2.5D Билборды
+        const size = 4.4;
         const geom = new THREE.PlaneGeometry(size, size);
         
-        // Pivot смещен так, чтобы основание касалось грунта и слегка уходило в траву
+        // Pivot смещен в основание с микрозаглублением в грунт
         geom.translate(0, size * 0.44, 0);
 
-        const mat = new THREE.MeshBasicMaterial({
+        // Используем Lambert-материал, чтобы спрайты принимали свет и давали объемную тень
+        const mat = new THREE.MeshLambertMaterial({
           map: texture,
           transparent: true,
           alphaTest: 0.15,
@@ -369,32 +368,29 @@
         const billboard = new THREE.Mesh(geom, mat);
         billboard.renderOrder = 10 + layerIndex;
 
-        // Локальная глубина ячейки от переднего края к заднему
-        const normal = cell.mesh.userData.normal;
-        let upDir = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
-        if (upDir.lengthSq() < 0.001) upDir = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
-
-        // Смещение слоев: Слой 2 впереди, Слой 3 в центре, Слой 4 у заднего края
+        // Смещение по глубине относительно камеры:
+        // Слой 2 (кусты/заборчик) выдвинут на +0.55 к камере
+        // Слой 3 (яблоня/колодец) в центре (0.0)
+        // Слой 4 (дом/ели) отодвинут назад на -0.55 от камеры
         const depthOffsets = {
-          2: -0.5, // Передний план (заборчик, овечки, камни)
-          3:  0.0, // Средний план (яблоня, колодец)
-          4:  0.5  // Задний план (домик, сосны)
+          2:  0.55,
+          3:  0.0,
+          4: -0.55
         };
-        const localOffset = upDir.clone().multiplyScalar(depthOffsets[layerIndex] || 0);
-
-        billboard.position.copy(cell.mesh.userData.cellCenter).add(localOffset);
 
         planetGroup.add(billboard);
         cell.mesh.userData.layers.push(billboard);
 
         standingLayers.push({
           mesh: billboard,
-          normal: normal
+          cellCenter: cell.mesh.userData.cellCenter,
+          normal: cell.mesh.userData.normal,
+          depthOffset: depthOffsets[layerIndex] || 0
         });
       });
     }
 
-    // 5. ПАРСИНГ GOOGLE ТАБЛИЦЫ (CSV)
+    // 5. ПАРСИНГ GOOGLE ТАБЛИЦЫ
     async function fetchGoogleSheetData() {
       if (!GOOGLE_SHEET_CSV_URL) return;
 
@@ -425,10 +421,11 @@
     }
     fetchGoogleSheetData();
 
-    // 6. RAYCASTING: НАВЕДЕНИЕ (HOVER) И КЛИК
+    // 6. RAYCASTING
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
     let hoveredMesh = null;
+    let isUserInteracting = false;
 
     function updateHoverOutline(mesh) {
       if (!mesh) {
@@ -472,6 +469,11 @@
       }
     });
 
+    window.addEventListener('mousedown', () => { isUserInteracting = true; });
+    window.addEventListener('mouseup', () => { isUserInteracting = false; });
+    window.addEventListener('touchstart', () => { isUserInteracting = true; });
+    window.addEventListener('touchend', () => { isUserInteracting = false; });
+
     window.addEventListener('click', e => {
       if (e.target.closest('#info-modal')) return;
 
@@ -508,7 +510,7 @@
       modal.style.display = 'none';
     }
 
-    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ ЛИЦОМ К КАМЕРЕ (ВОКРУГ НОРМАЛИ ЯЧЕЙКИ)
+    // 8. ДИНАМИЧЕСКИЙ ПАРАЛЛАКС ПО ВЕКТОРУ ВЗГЛЯДА
     function updateStandingLayers() {
       const planetWorldQuat = new THREE.Quaternion();
       planetGroup.getWorldQuaternion(planetWorldQuat);
@@ -516,23 +518,37 @@
 
       standingLayers.forEach(item => {
         const worldNormal = item.normal.clone().applyQuaternion(planetWorldQuat).normalize();
-        const worldPos = new THREE.Vector3();
-        item.mesh.getWorldPosition(worldPos);
+        const worldCenter = item.cellCenter.clone().applyQuaternion(planetWorldQuat);
 
-        const toCam = camera.position.clone().sub(worldPos).normalize();
+        // Вектор от ячейки к камере
+        const toCam = camera.position.clone().sub(worldCenter).normalize();
+        
+        // Горизонт взгляда на поверхности ячейки
         const forward = toCam.sub(worldNormal.clone().multiplyScalar(toCam.dot(worldNormal))).normalize();
 
         if (forward.lengthSq() > 0.001) {
+          // 1. Поворот лицом к камере
           const right = new THREE.Vector3().crossVectors(worldNormal, forward).normalize();
           const rotMatrix = new THREE.Matrix4().makeBasis(right, worldNormal, forward);
           const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
           item.mesh.quaternion.copy(invPlanetQuat.clone().multiply(targetQuat));
+
+          // 2. Смещение по глубине строго вдоль вектора взгляда forward
+          const localOffset = forward.clone().applyQuaternion(invPlanetQuat).multiplyScalar(item.depthOffset);
+          item.mesh.position.copy(item.cellCenter).add(localOffset);
         }
       });
     }
 
+    // 9. ЦИКЛ РЕНДЕРА
     function animate() {
       requestAnimationFrame(animate);
+
+      // Плавное фоновое вращение планеты в режиме покоя
+      if (!isUserInteracting) {
+        planetGroup.rotation.y += 0.0012;
+      }
+
       controls.update();
       updateStandingLayers();
       renderer.render(scene, camera);
