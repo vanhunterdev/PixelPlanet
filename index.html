@@ -103,9 +103,10 @@
 
   <div id="hint">
     <b>Коллаборативная Планета (42 ячейки)</b><br>
-    • Наведение: подсветка контура ячейки<br>
-    • Клик: профиль художника и соцсети<br>
-    • ЛКМ + Drag: вращение шара
+    • Слой 1: Поверхность (растянута без швов)<br>
+    • Слои 2-4: Стоячие 2.5D-объекты с автодоворотом<br>
+    • Клик: Профиль художника и описание<br>
+    • ЛКМ + Drag: Вращение шара
   </div>
 
   <div id="info-modal">
@@ -158,11 +159,9 @@
       const ctx = c.getContext('2d');
       ctx.imageSmoothingEnabled = false;
 
-      // Базовый цвет (пентагоны — вода, гексы — земля)
       ctx.fillStyle = isPentagon ? '#2263b3' : '#3f8a28';
       ctx.fillRect(0, 0, 64, 64);
 
-      // Пиксельный узор сетки
       ctx.fillStyle = isPentagon ? '#1a4e8f' : '#326e20';
       for (let i = 0; i < 64; i += 8) {
         for (let j = 0; j < 64; j += 8) {
@@ -170,7 +169,6 @@
         }
       }
 
-      // Номер ячейки
       ctx.fillStyle = 'rgba(255,255,255,0.7)';
       ctx.font = 'bold 16px monospace';
       ctx.textAlign = 'center';
@@ -222,6 +220,7 @@
 
     const cellsData = {};
     const interactiveMeshes = [];
+    const standingLayers = []; // Список для обновления ориентации стоячих объектов
 
     // Подсветка контура при наведении
     const hoverOutlineGeom = new THREE.BufferGeometry();
@@ -235,46 +234,48 @@
     hoverOutlineMesh.renderOrder = 999;
     planetGroup.add(hoverOutlineMesh);
 
-    // Вспомогательная функция развертки UV
-    function getUV(point, center, normal) {
-  // Направляем вектор "вверх" вдоль радиальной плоскости ячейки
-  let up = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
-  if (up.lengthSq() < 0.001) {
-    up = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
-  }
-  const right = new THREE.Vector3().crossVectors(up, normal).normalize();
-
-  const diff = point.clone().sub(center);
-
-  // Масштаб: значение 0.42 убирает сжатие и закрывает чёрные дыры по краям
-  const scale = 0.42;
-
-  return {
-    u: 0.5 + diff.dot(right) * scale,
-    v: 0.5 + diff.dot(up) * scale
-  };
-}
-
-    // Построение полигона слоя ячейки с физическим смещением (Параллакс)
-    function buildHexMesh(cellCenter, sortedFaceIndices, radiusOffset) {
+    // Функция построения сетки ячейки со строгой нормализацией UV от края до края
+    function buildHexMesh(cellCenter, sortedFaceIndices) {
       const geom = new THREE.BufferGeometry();
       const positions = [];
       const uvs = [];
       const normal = cellCenter.clone().normalize();
-      const centerPos = cellCenter.clone().add(normal.clone().multiplyScalar(radiusOffset));
+
+      // Базис плоскости ячейки
+      let up = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
+      if (up.lengthSq() < 0.001) {
+        up = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
+      }
+      const right = new THREE.Vector3().crossVectors(up, normal).normalize();
+
+      // Находим максимальный радиус ячейки для точной подгонки UV
+      let maxRadius = 0.001;
+      for (let i = 0; i < sortedFaceIndices.length; i++) {
+        const d = faceCenters[sortedFaceIndices[i]].clone().sub(cellCenter).length();
+        if (d > maxRadius) maxRadius = d;
+      }
+
+      function projectUV(point) {
+        const diff = point.clone().sub(cellCenter);
+        // Масштабируем так, чтобы крайние точки лежали строго на окружности текстуры
+        return {
+          u: 0.5 + (diff.dot(right) / (maxRadius * 2.0)),
+          v: 0.5 + (diff.dot(up) / (maxRadius * 2.0))
+        };
+      }
 
       for (let i = 0; i < sortedFaceIndices.length; i++) {
         const next = (i + 1) % sortedFaceIndices.length;
-        const p2 = faceCenters[sortedFaceIndices[i]].clone().add(normal.clone().multiplyScalar(radiusOffset));
-        const p3 = faceCenters[sortedFaceIndices[next]].clone().add(normal.clone().multiplyScalar(radiusOffset));
+        const p2 = faceCenters[sortedFaceIndices[i]];
+        const p3 = faceCenters[sortedFaceIndices[next]];
 
-        positions.push(centerPos.x, centerPos.y, centerPos.z);
+        positions.push(cellCenter.x, cellCenter.y, cellCenter.z);
         positions.push(p2.x, p2.y, p2.z);
         positions.push(p3.x, p3.y, p3.z);
 
         uvs.push(0.5, 0.5);
-        const uv2 = getUV(p2, centerPos, normal);
-        const uv3 = getUV(p3, centerPos, normal);
+        const uv2 = projectUV(p2);
+        const uv3 = projectUV(p3);
         uvs.push(uv2.u, uv2.v);
         uvs.push(uv3.u, uv3.v);
       }
@@ -304,14 +305,14 @@
 
       const isPentagon = sortedFaces.length === 5;
 
-      // Создаем базовый слой 1
-      const baseGeom = buildHexMesh(cellCenter, sortedFaces, 0.0);
+      // Базовый слой 1 (Земля)
+      const baseGeom = buildHexMesh(cellCenter, sortedFaces);
       const baseMat = new THREE.MeshLambertMaterial({
-        map: createFallbackTexture(cellId, isPentagon)
+        map: createFallbackTexture(cellId, isPentagon),
+        side: THREE.FrontSide
       });
       const baseMesh = new THREE.Mesh(baseGeom, baseMat);
 
-      // Сохраняем метаданные для взаимодействия
       baseMesh.userData = {
         cellId: cellId,
         isPentagon: isPentagon,
@@ -324,7 +325,6 @@
       planetGroup.add(baseMesh);
       interactiveMeshes.push(baseMesh);
 
-      // Дефолтные данные ячейки
       cellsData[cellId] = {
         artist: "Свободная ячейка",
         desc: isPentagon ? "Особая точка: Пентагон (1 из 12 на планете)." : "Стандартный шестиугольный биом.",
@@ -333,42 +333,67 @@
       };
     });
 
-    // 4. ПОДГРУЗКА И НАЛОЖЕНИЕ СЛОЕВ ИЗ ДАННЫХ
+    // 4. ПОДГРУЗКА СЛОЕВ: СЛОЙ 1 ЛЕЖИТ, СЛОИ 2-4 СТОЯТ
     const texLoader = new THREE.TextureLoader();
 
-    function applyLayer(cellId, layerIndex, imgUrl, heightOffset) {
-  if (!imgUrl || imgUrl.trim() === '') return;
+    function applyLayer(cellId, layerIndex, imgUrl) {
+      if (!imgUrl || imgUrl.trim() === '') return;
 
-  const cell = cellsData[cellId];
-  if (!cell) return;
+      const cell = cellsData[cellId];
+      if (!cell) return;
 
-  texLoader.load(imgUrl, texture => {
-    texture.magFilter = THREE.NearestFilter;
-    texture.minFilter = THREE.NearestFilter;
-    texture.generateMipmaps = false;
+      texLoader.load(imgUrl, texture => {
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+        texture.generateMipmaps = false;
 
-    if (layerIndex === 1) {
-      // Базовый слой 1 — земля
-      cell.mesh.material.map = texture;
-      cell.mesh.material.needsUpdate = true;
-    } else {
-      // Слои 2, 3, 4 — парящие прозрачные слои
-      const geom = buildHexMesh(cell.mesh.userData.cellCenter, cell.mesh.userData.sortedFaces, heightOffset);
-      const mat = new THREE.MeshBasicMaterial({
-        map: texture,
-        transparent: true,
-        alphaTest: 0.05,        // Отсекает пустые пиксели без полупрозрачных артефактов
-        depthWrite: true,       // Сохраняет правильную сортировку глубины
-        side: THREE.FrontSide
+        // СЛОЙ 1: Лежит на сфере (Земля)
+        if (layerIndex === 1) {
+          cell.mesh.material.map = texture;
+          cell.mesh.material.needsUpdate = true;
+          return;
+        }
+
+        // СЛОИ 2, 3, 4: СТОЯТ ВЕРТИКАЛЬНО (Билборды)
+        const size = 3.6; // Оптимальный размер плашки под масштаб гекса
+        const geom = new THREE.PlaneGeometry(size, size);
+        
+        // Pivot строго внизу (нижний срез касается земли)
+        geom.translate(0, size / 2, 0);
+
+        const mat = new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          alphaTest: 0.2,
+          side: THREE.DoubleSide,
+          depthWrite: true
+        });
+
+        const billboard = new THREE.Mesh(geom, mat);
+
+        // Расставляем по глубине ячейки (передний, средний, задний план)
+        const normal = cell.mesh.userData.normal;
+        let upDir = new THREE.Vector3(0, 1, 0).projectOnPlane(normal).normalize();
+        if (upDir.lengthSq() < 0.001) upDir = new THREE.Vector3(0, 0, 1).projectOnPlane(normal).normalize();
+
+        let depthOffset = 0;
+        if (layerIndex === 2) depthOffset = -0.55; // Передний план (кусты, трава)
+        if (layerIndex === 3) depthOffset = 0.0;   // Средний план (домики, деревья)
+        if (layerIndex === 4) depthOffset = 0.65;  // Задний план (горы, высотки)
+
+        const basePos = cell.mesh.userData.cellCenter.clone().add(upDir.clone().multiplyScalar(depthOffset));
+        billboard.position.copy(basePos);
+
+        planetGroup.add(billboard);
+        cell.mesh.userData.layers.push(billboard);
+
+        // Добавляем в список для автоповорота к камере вокруг нормали
+        standingLayers.push({
+          mesh: billboard,
+          normal: normal
+        });
       });
-
-      const layerMesh = new THREE.Mesh(geom, mat);
-      layerMesh.renderOrder = layerIndex; // Чем выше слой, тем позже рисуется
-      planetGroup.add(layerMesh);
-      cell.mesh.userData.layers.push(layerMesh);
     }
-  });
-}
 
     // 5. ПАРСИНГ GOOGLE ТАБЛИЦЫ (CSV)
     async function fetchGoogleSheetData() {
@@ -379,7 +404,6 @@
         const csvText = await resp.text();
         const rows = csvText.split('\n').map(r => r.split(','));
 
-        // Пропускаем заголовок таблицы
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
           if (!row || row.length < 4) continue;
@@ -391,11 +415,11 @@
           cellsData[cellId].desc = row[2]?.trim() || "";
           cellsData[cellId].link = row[3]?.trim() || "#";
 
-          // Слои с разной высотой параллакса
-          if (row[4]) applyLayer(cellId, 1, row[4].trim(), 0.0);
-          if (row[5]) applyLayer(cellId, 2, row[5].trim(), 0.06);
-          if (row[6]) applyLayer(cellId, 3, row[6].trim(), 0.12);
-          if (row[7]) applyLayer(cellId, 4, row[7].trim(), 0.20);
+          // Подгружаем слои
+          if (row[4]) applyLayer(cellId, 1, row[4].trim());
+          if (row[5]) applyLayer(cellId, 2, row[5].trim());
+          if (row[6]) applyLayer(cellId, 3, row[6].trim());
+          if (row[7]) applyLayer(cellId, 4, row[7].trim());
         }
       } catch (err) {
         console.warn("Не удалось загрузить данные таблицы, используются локальные заглушки.", err);
@@ -416,7 +440,7 @@
 
       const { cellCenter, sortedFaces, normal } = mesh.userData;
       const points = [];
-      const offset = 0.03; // Чуть приподнимаем контур над землей
+      const offset = 0.03;
 
       for (let i = 0; i < sortedFaces.length; i++) {
         const p = faceCenters[sortedFaces[i]].clone().add(normal.clone().multiplyScalar(offset));
@@ -450,7 +474,6 @@
       }
     });
 
-    // Клик по ячейке
     window.addEventListener('click', e => {
       if (e.target.closest('#info-modal')) return;
 
@@ -487,10 +510,32 @@
       modal.style.display = 'none';
     }
 
-    // 8. ЦИКЛ РЕНДЕРА
+    // 8. АВТОПОВОРОТ СТОЯЧИХ СЛОЕВ И ЦИКЛ РЕНДЕРА
+    function updateStandingLayers() {
+      const planetWorldQuat = new THREE.Quaternion();
+      planetGroup.getWorldQuaternion(planetWorldQuat);
+
+      standingLayers.forEach(item => {
+        const worldNormal = item.normal.clone().applyQuaternion(planetWorldQuat).normalize();
+        const worldPos = new THREE.Vector3();
+        item.mesh.getWorldPosition(worldPos);
+
+        const toCam = camera.position.clone().sub(worldPos).normalize();
+        const forward = toCam.sub(worldNormal.clone().multiplyScalar(toCam.dot(worldNormal))).normalize();
+
+        if (forward.lengthSq() > 0.001) {
+          const right = new THREE.Vector3().crossVectors(worldNormal, forward).normalize();
+          const rotMatrix = new THREE.Matrix4().makeBasis(right, worldNormal, forward);
+          const targetQuat = new THREE.Quaternion().setFromRotationMatrix(rotMatrix);
+          item.mesh.quaternion.copy(planetWorldQuat.clone().invert().multiply(targetQuat));
+        }
+      });
+    }
+
     function animate() {
       requestAnimationFrame(animate);
       controls.update();
+      updateStandingLayers();
       renderer.render(scene, camera);
     }
     animate();
