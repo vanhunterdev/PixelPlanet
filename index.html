@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Pixel Hex Community Planet</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at center, #1b1b2f 0%, #0d0d18 100%);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      user-select: none;
+    }
+
+    /* Верхняя плашка подсказки */
+    #hint {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      color: #eaeaea;
+      background: rgba(15, 15, 25, 0.85);
+      border: 1px solid #444;
+      border-radius: 8px;
+      padding: 12px 18px;
+      pointer-events: none;
+      font-family: monospace;
+      font-size: 13px;
+    }
+
+    /* Модальное окно по клику */
+    #info-modal {
+      position: absolute;
+      bottom: 24px;
+      right: 24px;
+      width: 320px;
+      background: rgba(20, 20, 32, 0.95);
+      border: 2px solid #5ce1e6;
+      border-radius: 12px;
+      padding: 20px;
+      color: #fff;
+      display: none;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+    }
+
+    #info-modal h3 {
+      margin: 0 0 6px 0;
+      color: #5ce1e6;
+      font-size: 18px;
+    }
+
+    #info-modal .cell-badge {
+      display: inline-block;
+      font-size: 11px;
+      background: #333;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 12px;
+      color: #aaa;
+      font-family: monospace;
+    }
+
+    #info-modal p {
+      font-size: 14px;
+      line-height: 1.5;
+      color: #ccc;
+      margin: 0 0 16px 0;
+    }
+
+    #info-modal a {
+      display: inline-block;
+      color: #12121a;
+      background: #5ce1e6;
+      text-decoration: none;
+      font-weight: bold;
+      font-size: 13px;
+      padding: 8px 14px;
+      border-radius: 6px;
+      transition: background 0.2s;
+    }
+
+    #info-modal a:hover {
+      background: #39b2b7;
+    }
+
+    #info-modal .close-btn {
+      position: absolute;
+      top: 12px;
+      right: 14px;
+      background: transparent;
+      border: none;
+      color: #888;
+      font-size: 18px;
+      cursor: pointer;
+    }
+    #info-modal .close-btn:hover { color: #fff; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+</head>
+<body>
+
+  <div id="hint">
+    <b>Коллаборативная Планета (42 ячейки)</b><br>
+    • Наведение: подсветка контура ячейки<br>
+    • Клик: профиль художника и соцсети<br>
+    • ЛКМ + Drag: вращение шара
+  </div>
+
+  <div id="info-modal">
+    <button class="close-btn" onclick="closeModal()">×</button>
+    <div id="modal-cell-type" class="cell-badge">Ячейка #0</div>
+    <h3 id="modal-artist">Имя художника</h3>
+    <p id="modal-desc">Описание диорамы...</p>
+    <a id="modal-link" href="#" target="_blank">Профиль автора →</a>
+  </div>
+
+  <script>
+    // ВСТАВЬТЕ СЮДА ВАШУ ССЫЛКУ НА ОПУБЛИКОВАННЫЙ CSV ИЗ GOOGLE SHEETS
+    const GOOGLE_SHEET_CSV_URL = "";
+
+    // 1. ИНИЦИАЛИЗАЦИЯ ТРЕХМЕРНОГО МИРА
+    const scene = new THREE.Scene();
+    const aspect = window.innerWidth / window.innerHeight;
+    const viewSize = 13;
+    const camera = new THREE.OrthographicCamera(
+      -viewSize * aspect, viewSize * aspect,
+      viewSize, -viewSize,
+      0.1, 1000
+    );
+    camera.position.set(22, 26, 22);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+    scene.add(ambientLight);
+    const sunLight = new THREE.DirectionalLight(0xffffff, 0.4);
+    sunLight.position.set(30, 40, 20);
+    scene.add(sunLight);
+
+    const planetRadius = 8.0;
+    const planetGroup = new THREE.Group();
+    scene.add(planetGroup);
+
+    // 2. ДЕФОЛТНЫЙ ПИКСЕЛЬНЫЙ ШАБЛОН ДЛЯ ЯЧЕЕК БЕЗ АРТА
+    function createFallbackTexture(cellId, isPentagon) {
+      const c = document.createElement('canvas');
+      c.width = 64;
+      c.height = 64;
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+
+      // Базовый цвет (пентагоны — вода, гексы — земля)
+      ctx.fillStyle = isPentagon ? '#2263b3' : '#3f8a28';
+      ctx.fillRect(0, 0, 64, 64);
+
+      // Пиксельный узор сетки
+      ctx.fillStyle = isPentagon ? '#1a4e8f' : '#326e20';
+      for (let i = 0; i < 64; i += 8) {
+        for (let j = 0; j < 64; j += 8) {
+          if ((i + j) % 16 === 0) ctx.fillRect(i, j, 8, 8);
+        }
+      }
+
+      // Номер ячейки
+      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.font = 'bold 16px monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`#${cellId}`, 32, 32);
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      return tex;
+    }
+
+    // 3. ПОСТРОЕНИЕ СФЕРЫ НА 42 ЯЧЕЙКИ (Subdivision = 1)
+    const baseIco = new THREE.IcosahedronGeometry(planetRadius, 1);
+    const pos = baseIco.attributes.position;
+    const vertices = [];
+    const vertMap = new Map();
+    const precision = 3;
+
+    for (let i = 0; i < pos.count; i++) {
+      const v = new THREE.Vector3(pos.getX(i), pos.getY(i), pos.getZ(i));
+      const key = `${v.x.toFixed(precision)}_${v.y.toFixed(precision)}_${v.z.toFixed(precision)}`;
+      if (!vertMap.has(key)) {
+        vertMap.set(key, vertices.length);
+        vertices.push(v);
+      }
+    }
+
+    const triangles = [];
+    for (let i = 0; i < pos.count; i += 3) {
+      const k0 = `${pos.getX(i).toFixed(precision)}_${pos.getY(i).toFixed(precision)}_${pos.getZ(i).toFixed(precision)}`;
+      const k1 = `${pos.getX(i+1).toFixed(precision)}_${pos.getY(i+1).toFixed(precision)}_${pos.getZ(i+1).toFixed(precision)}`;
+      const k2 = `${pos.getX(i+2).toFixed(precision)}_${pos.getY(i+2).toFixed(precision)}_${pos.getZ(i+2).toFixed(precision)}`;
+      triangles.push([vertMap.get(k0), vertMap.get(k1), vertMap.get(k2)]);
+    }
+
+    const faceCenters = triangles.map(t => {
+      return new THREE.Vector3()
+        .add(vertices[t[0]]).add(vertices[t[1]]).add(vertices[t[2]])
+        .divideScalar(3).normalize().multiplyScalar(planetRadius);
+    });
+
+    const vertToFaces = Array.from({ length: vertices.length }, () => []);
+    triangles.forEach((t, idx) => {
+      vertToFaces[t[0]].push(idx);
+      vertToFaces[t[1]].push(idx);
+      vertToFaces[t[2]].push(idx);
+    });
+
+    const cellsData = {};
+    const interactiveMeshes = [];
+
+    // Подсветка контура при наведении
+    const hoverOutlineGeom = new THREE.BufferGeometry();
+    const hoverOutlineMat = new THREE.LineBasicMaterial({
+      color: 0x5ce1e6,
+      linewidth: 3,
+      depthTest: false
+    });
+    const hoverOutlineMesh = new THREE.LineLoop(hoverOutlineGeom, hoverOutlineMat);
+    hoverOutlineMesh.visible = false;
+    hoverOutlineMesh.renderOrder = 999;
+    planetGroup.add(hoverOutlineMesh);
+
+    // Вспомогательная функция развертки UV
+    function getUV(point, center, normal) {
+      let right = new THREE.Vector3(0, 1, 0).cross(normal).normalize();
+      if (right.lengthSq() < 0.01) right = new THREE.Vector3(1, 0, 0).cross(normal).normalize();
+      const up = normal.clone().cross(right).normalize();
+      const diff = point.clone().sub(center);
+      return {
+        u: 0.5 + diff.dot(right) * 0.28,
+        v: 0.5 + diff.dot(up) * 0.28
+      };
+    }
+
+    // Построение полигона слоя ячейки с физическим смещением (Параллакс)
+    function buildHexMesh(cellCenter, sortedFaceIndices, radiusOffset) {
+      const geom = new THREE.BufferGeometry();
+      const positions = [];
+      const uvs = [];
+      const normal = cellCenter.clone().normalize();
+      const centerPos = cellCenter.clone().add(normal.clone().multiplyScalar(radiusOffset));
+
+      for (let i = 0; i < sortedFaceIndices.length; i++) {
+        const next = (i + 1) % sortedFaceIndices.length;
+        const p2 = faceCenters[sortedFaceIndices[i]].clone().add(normal.clone().multiplyScalar(radiusOffset));
+        const p3 = faceCenters[sortedFaceIndices[next]].clone().add(normal.clone().multiplyScalar(radiusOffset));
+
+        positions.push(centerPos.x, centerPos.y, centerPos.z);
+        positions.push(p2.x, p2.y, p2.z);
+        positions.push(p3.x, p3.y, p3.z);
+
+        uvs.push(0.5, 0.5);
+        const uv2 = getUV(p2, centerPos, normal);
+        const uv3 = getUV(p3, centerPos, normal);
+        uvs.push(uv2.u, uv2.v);
+        uvs.push(uv3.u, uv3.v);
+      }
+
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geom.computeVertexNormals();
+      return geom;
+    }
+
+    // Сборка 42 ячеек
+    vertToFaces.forEach((fIndices, cellId) => {
+      if (fIndices.length === 0) return;
+
+      const cellCenter = new THREE.Vector3();
+      fIndices.forEach(fi => cellCenter.add(faceCenters[fi]));
+      cellCenter.divideScalar(fIndices.length).normalize().multiplyScalar(planetRadius);
+      const normal = cellCenter.clone().normalize();
+
+      const baseDir = faceCenters[fIndices[0]].clone().sub(cellCenter).normalize();
+      const sortedFaces = fIndices.slice().sort((a, b) => {
+        const vA = faceCenters[a].clone().sub(cellCenter).normalize();
+        const vB = faceCenters[b].clone().sub(cellCenter).normalize();
+        return Math.atan2(new THREE.Vector3().crossVectors(baseDir, vA).dot(normal), baseDir.dot(vA)) -
+               Math.atan2(new THREE.Vector3().crossVectors(baseDir, vB).dot(normal), baseDir.dot(vB));
+      });
+
+      const isPentagon = sortedFaces.length === 5;
+
+      // Создаем базовый слой 1
+      const baseGeom = buildHexMesh(cellCenter, sortedFaces, 0.0);
+      const baseMat = new THREE.MeshLambertMaterial({
+        map: createFallbackTexture(cellId, isPentagon)
+      });
+      const baseMesh = new THREE.Mesh(baseGeom, baseMat);
+
+      // Сохраняем метаданные для взаимодействия
+      baseMesh.userData = {
+        cellId: cellId,
+        isPentagon: isPentagon,
+        cellCenter: cellCenter,
+        normal: normal,
+        sortedFaces: sortedFaces,
+        layers: [baseMesh]
+      };
+
+      planetGroup.add(baseMesh);
+      interactiveMeshes.push(baseMesh);
+
+      // Дефолтные данные ячейки
+      cellsData[cellId] = {
+        artist: "Свободная ячейка",
+        desc: isPentagon ? "Особая точка: Пентагон (1 из 12 на планете)." : "Стандартный шестиугольный биом.",
+        link: "https://github.com",
+        mesh: baseMesh
+      };
+    });
+
+    // 4. ПОДГРУЗКА И НАЛОЖЕНИЕ СЛОЕВ ИЗ ДАННЫХ
+    const texLoader = new THREE.TextureLoader();
+
+    function applyLayer(cellId, layerIndex, imgUrl, heightOffset) {
+      if (!imgUrl || !imgUrl.startsWith('http')) return;
+
+      const cell = cellsData[cellId];
+      if (!cell) return;
+
+      texLoader.load(imgUrl, texture => {
+        texture.magFilter = THREE.NearestFilter;
+        texture.minFilter = THREE.NearestFilter;
+
+        if (layerIndex === 1) {
+          // Заменяем базовую текстуру земли
+          cell.mesh.material.map = texture;
+          cell.mesh.material.needsUpdate = true;
+        } else {
+          // Создаем приподнятый слой (параллакс 2.5D)
+          const geom = buildHexMesh(cell.mesh.userData.cellCenter, cell.mesh.userData.sortedFaces, heightOffset);
+          const mat = new THREE.MeshLambertMaterial({
+            map: texture,
+            transparent: true,
+            alphaTest: 0.2,
+            depthWrite: false
+          });
+          const layerMesh = new THREE.Mesh(geom, mat);
+          planetGroup.add(layerMesh);
+          cell.mesh.userData.layers.push(layerMesh);
+        }
+      });
+    }
+
+    // 5. ПАРСИНГ GOOGLE ТАБЛИЦЫ (CSV)
+    async function fetchGoogleSheetData() {
+      if (!GOOGLE_SHEET_CSV_URL) return;
+
+      try {
+        const resp = await fetch(GOOGLE_SHEET_CSV_URL);
+        const csvText = await resp.text();
+        const rows = csvText.split('\n').map(r => r.split(','));
+
+        // Пропускаем заголовок таблицы
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (!row || row.length < 4) continue;
+
+          const cellId = parseInt(row[0].trim());
+          if (isNaN(cellId) || !cellsData[cellId]) continue;
+
+          cellsData[cellId].artist = row[1]?.trim() || "Анонимный автор";
+          cellsData[cellId].desc = row[2]?.trim() || "";
+          cellsData[cellId].link = row[3]?.trim() || "#";
+
+          // Слои с разной высотой параллакса
+          if (row[4]) applyLayer(cellId, 1, row[4].trim(), 0.0);
+          if (row[5]) applyLayer(cellId, 2, row[5].trim(), 0.06);
+          if (row[6]) applyLayer(cellId, 3, row[6].trim(), 0.12);
+          if (row[7]) applyLayer(cellId, 4, row[7].trim(), 0.20);
+        }
+      } catch (err) {
+        console.warn("Не удалось загрузить данные таблицы, используются локальные заглушки.", err);
+      }
+    }
+    fetchGoogleSheetData();
+
+    // 6. RAYCASTING: НАВЕДЕНИЕ (HOVER) И КЛИК
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    let hoveredMesh = null;
+
+    function updateHoverOutline(mesh) {
+      if (!mesh) {
+        hoverOutlineMesh.visible = false;
+        return;
+      }
+
+      const { cellCenter, sortedFaces, normal } = mesh.userData;
+      const points = [];
+      const offset = 0.03; // Чуть приподнимаем контур над землей
+
+      for (let i = 0; i < sortedFaces.length; i++) {
+        const p = faceCenters[sortedFaces[i]].clone().add(normal.clone().multiplyScalar(offset));
+        points.push(p);
+      }
+
+      hoverOutlineGeom.setFromPoints(points);
+      hoverOutlineMesh.visible = true;
+    }
+
+    window.addEventListener('mousemove', e => {
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(interactiveMeshes);
+
+      if (intersects.length > 0) {
+        const target = intersects[0].object;
+        if (hoveredMesh !== target) {
+          hoveredMesh = target;
+          updateHoverOutline(hoveredMesh);
+          document.body.style.cursor = 'pointer';
+        }
+      } else {
+        if (hoveredMesh !== null) {
+          hoveredMesh = null;
+          updateHoverOutline(null);
+          document.body.style.cursor = 'default';
+        }
+      }
+    });
+
+    // Клик по ячейке
+    window.addEventListener('click', e => {
+      if (e.target.closest('#info-modal')) return;
+
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(interactiveMeshes);
+
+      if (intersects.length > 0) {
+        const cellId = intersects[0].object.userData.cellId;
+        showModal(cellId);
+      }
+    });
+
+    // 7. МОДАЛЬНОЕ ОКНО
+    const modal = document.getElementById('info-modal');
+    const modalArtist = document.getElementById('modal-artist');
+    const modalDesc = document.getElementById('modal-desc');
+    const modalLink = document.getElementById('modal-link');
+    const modalCellType = document.getElementById('modal-cell-type');
+
+    function showModal(cellId) {
+      const data = cellsData[cellId];
+      const isPentagon = data.mesh.userData.isPentagon;
+
+      modalCellType.innerText = `Ячейка #${cellId} (${isPentagon ? 'Пентагон' : 'Гексагон'})`;
+      modalArtist.innerText = data.artist;
+      modalDesc.innerText = data.desc || "Описание работы пока не добавлено.";
+      modalLink.href = data.link;
+      modalLink.style.display = data.link && data.link !== '#' ? 'inline-block' : 'none';
+
+      modal.style.display = 'block';
+    }
+
+    function closeModal() {
+      modal.style.display = 'none';
+    }
+
+    // 8. ЦИКЛ РЕНДЕРА
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+      const newAspect = window.innerWidth / window.innerHeight;
+      camera.left = -viewSize * newAspect;
+      camera.right = viewSize * newAspect;
+      camera.top = viewSize;
+      camera.bottom = -viewSize;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
