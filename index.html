@@ -329,7 +329,7 @@
     const texLoader = new THREE.TextureLoader();
 
     function applyLayer(cellId, layerIndex, imgUrl, heightOffset) {
-      if (!imgUrl || !imgUrl.startsWith('http')) return;
+    if (!imgUrl || imgUrl.trim() === '') return;
 
       const cell = cellsData[cellId];
       if (!cell) return;
